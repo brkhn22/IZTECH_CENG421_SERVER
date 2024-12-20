@@ -12,11 +12,13 @@
 #define MAIN_PORT 8080
 
 #define MAX_MESSAGE_SIZE 2000
+#define MAX_HEADER_SIZE 2100
 
 int main() {
     int sock;
     struct sockaddr_in serverAddr;
-    char buffer[MAX_MESSAGE_SIZE];
+    char buffer_body[MAX_MESSAGE_SIZE];
+    char buffer_header[MAX_HEADER_SIZE];
     pthread_t receive_thread, send_thread;
     int nread;
     fd_set read_write_set, testset;
@@ -34,6 +36,7 @@ int main() {
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_port = htons(port);  // Server port
     serverAddr.sin_addr.s_addr = inet_addr("127.0.0.1");  // Server address (localhost)
+    
 
     // Connect to the server
     if (connect(sock, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
@@ -41,6 +44,7 @@ int main() {
         close(sock);
         return -1;
     }
+    
 
     FD_ZERO(&read_write_set);
     FD_SET(sock, &read_write_set);
@@ -57,10 +61,10 @@ int main() {
 
         if(port == MAIN_PORT){
             if (FD_ISSET(sock, &testset)) {
-                nread = recv(sock, buffer, MAX_MESSAGE_SIZE, 0);
+                nread = recv(sock, buffer_body, MAX_MESSAGE_SIZE, 0);
                 if (nread > 0) {
-                    buffer[nread] = '\0';  // Null-terminate the received message
-                    printf("%s", buffer);
+                    buffer_body[nread] = '\0';  // Null-terminate the received message
+                    printf("%s", buffer_body);
                     printf("Please enter the port number \n");
                     fflush(stdout);
                     FD_CLR(sock, &read_write_set);
@@ -70,8 +74,8 @@ int main() {
 
             if (FD_ISSET(STDIN_FILENO, &testset)) {
                 // Read user input
-                if (fgets(buffer, MAX_MESSAGE_SIZE, stdin) != NULL) {
-                    port = atoi(buffer);
+                if (fgets(buffer_body, MAX_MESSAGE_SIZE, stdin) != NULL) {
+                    port = atoi(buffer_body);
                     printf("%d\n", port);
 
                     // Create socket
@@ -90,23 +94,24 @@ int main() {
                         close(sock);
                         return -1;
                     }
-                    FD_SET(sock, &read_write_set);             
+                    FD_SET(sock, &read_write_set);    
+                    memset(buffer_body, '\0', MAX_MESSAGE_SIZE);
                 }
             }
         }else if (port > MAIN_PORT){
             if (FD_ISSET(sock, &testset)) {
-                nread = recv(sock, buffer, MAX_MESSAGE_SIZE, 0);
+                nread = recv(sock, buffer_header, MAX_HEADER_SIZE, 0);
                 if (nread > 0) {
-                    buffer[nread] = '\0';  // Null-terminate the received message
-                    printf("%s", buffer);
+                    buffer_header[nread] = '\0';
+                    printf("%s", buffer_header);
                 }
             }
 
             if (FD_ISSET(STDIN_FILENO, &testset)) {
-                if(fgets(buffer, MAX_MESSAGE_SIZE, stdin) != NULL){
-                    nread = strlen(buffer);
-                    buffer[nread] = '\n';
-                    if(send(sock, buffer, nread, 0) <= 0){
+                if(fgets(buffer_body, MAX_MESSAGE_SIZE, stdin) != NULL){
+                    snprintf(buffer_header, MAX_HEADER_SIZE, "%s", buffer_body);
+                    nread = strlen(buffer_header);
+                    if(send(sock, buffer_header, nread, 0) <= 0){
                         printf("The server socket %d disconnected.\n", sock);
                         break;
                     }
