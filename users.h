@@ -18,7 +18,10 @@ struct user_struct {
 user *user_map;
 int user_count;
 
+int compare_strings(char str1[], char str2[]);
+
 void initialize_users();
+int user_name_validation(char *name);
 int add_user(char name[], int socket);
 int remove_user(char name[]);
 int remove_user_by_socket(int socket);

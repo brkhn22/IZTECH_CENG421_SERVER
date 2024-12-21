@@ -51,7 +51,6 @@ int main() {
     FD_SET(STDIN_FILENO, &read_write_set);
     fflush(stdout);
     while (1) {
-
         // Receive message from the server
         testset = read_write_set;
         if (select(FD_SETSIZE, &testset, NULL, NULL, NULL) < 1) {
@@ -76,7 +75,6 @@ int main() {
                 // Read user input
                 if (fgets(buffer_body, MAX_MESSAGE_SIZE, stdin) != NULL) {
                     port = atoi(buffer_body);
-                    printf("%d\n", port);
 
                     // Create socket
                     sock = socket(AF_INET, SOCK_STREAM, 0);

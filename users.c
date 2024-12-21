@@ -1,11 +1,15 @@
+#ifndef USERS_H
+#define USERS_H
 #include "users.h"
+#endif
 
 void initialize_users(){
     user_count = 0;
 }
 
 int add_user(char name[], int socket){
-    if (index_of_user(name) > -1) return 0;
+    if (!user_name_validation(name)) return 0;
+    if (index_of_user(name) >= 0) return 0;
     if(user_count == 0){
         user_map = malloc(sizeof(struct user_struct));
         if(user_map == NULL)
@@ -66,28 +70,14 @@ int remove_user_by_socket(int socket){
 }
 
 int index_of_user(char name[]){
-    int idx = -1;
     int i;
-    int j;
-    int name_len = strlen(name);
-    int temp_len;
-    int result = 0;
-    if(user_count > 0){
-        for(i = 0; i < user_count && !result; i++){
-            temp_len = strlen(user_map[i].name);
-            if(name_len == temp_len){
-                result = 1;
-                idx = i;
-                for(j = 0; j < name_len; j++){
-                    if(tolower(name[j]) != tolower(user_map[i].name[j])){
-                        result = 0;
-                        idx = -1;
-                    }
-                }
-            }
-        }
+    if (!name) return -1;
+    if (user_count <= 0) return -1;
+    for(i = 0; i < user_count; i++){
+        if(compare_strings(name, user_map[i].name))
+            return i;
     }
-    return idx;
+    return -1;
 }
 
 int index_of_user_by_socket(int socket){
@@ -114,4 +104,41 @@ char* get_user_name(int socket){
     int idx = index_of_user_by_socket(socket);
     if(idx < 0) return NULL;
     return user_map[idx].name;
+}
+
+int user_name_validation(char *name){
+    int i;
+    int len;
+    int result = 1;
+    if(!name) return 0;
+    len = strlen(name);
+    if(len <= MIN_NAME_LEN || len > (MAX_NAME_LEN-1)) return 0;
+    for(i = 0; i < len; i++){
+        if(!((name[i] >= 'A' && name[i] <= 'Z') ||
+        (name[i] >= 'a' && name[i] <= 'z') ||
+        (name[i] >= '0' && name[i] <= '9') ||
+         name[i] == '_' || name[i] == '#' || name[i] == '.')){
+            result = 0;
+            break;
+         }
+    }
+    return result;
+}
+
+
+int compare_strings(char str1[], char str2[]){
+    int i;
+    int str1_len;
+    int str2_len;
+    if(!str1 || !str2) return 0;
+
+    str1_len = strlen(str1);
+    str2_len = strlen(str2);
+    if(str1_len != str2_len) return 0;
+
+    for(i = 0; i < str1_len; i++){
+        if(tolower(str1[i]) != tolower(str2[i]))
+            return 0; 
+    }
+    return 1;
 }

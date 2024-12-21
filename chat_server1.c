@@ -8,6 +8,7 @@
 #include <pthread.h>
 #include "users.h"
 
+
 #define MAIN_PORT 8080
 #define MAX_HEADER_SIZE 2100
 
@@ -17,6 +18,7 @@ int client_sockets[MAX_USERS];
 char prefix_authenticate[] = "/authenticate ";
 char prefix_exit[] = "/exit";
 char prefix_private[] = "/private ";
+char prefix_online[] = "/online";
 
 struct private_message {
     char *message;
@@ -27,11 +29,11 @@ struct private_message {
 struct arg_struct {
     int sock;
     int child_size;
-}args;
+};
 
 void* thread_proc(void *arg);
 void* main_proc(void *arg);
-void broadcastMessage(char buffer[], int *clientSocket);
+void broadcast_message(char buffer[], int *clientSocket);
 void time_stamp_message(char *buffer, char name[]);
 void free_private_message(struct private_message *pm);
 int prefix_control(char prefix[], char buffer[]);
@@ -40,9 +42,9 @@ int prefix_control(char prefix[], char buffer[]);
 int user_authentication(char buffer[], int prefix_len, int socket);
 int user_exit_authentication(char buffer[], int prefix_len, int socket);
 int user_private_message(char buffer[], int prefix_len, int socket, struct private_message *pm);
+char * user_online();
 
 pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
-
 
 void handle_sigchld(int sig) {
     while (waitpid(-1, NULL, WNOHANG) > 0);
@@ -261,20 +263,26 @@ void* thread_proc(void *arg)
                                 send(sock, buffer, strlen(buffer), 0);
                             }
                         }
+                    }else if(prefix_control(prefix_online, buffer)){
+                        char *user_list = user_online();
+                        strcpy(buffer, user_list);
+                        time_stamp_message(buffer, SERVER);
+                        send(sock, buffer, strlen(buffer), 0);
+                        free(user_list);
                     }
                 }else{
                     if(!authenticated) {
                         // user has  not been authenticated.
                         time_stamp_message(buffer, ANONYMOUS);
-                        broadcastMessage(buffer, &sock);
+                        broadcast_message(buffer, &sock);
                     } else {
                         // user has been authenticated.
                         char *name = get_user_name(sock);
                         time_stamp_message(buffer, name);
-                        broadcastMessage(buffer, &sock);
+                        broadcast_message(buffer, &sock);
                     }
                 }
-                sleep(1);
+            //    sleep(1);
             }
 
             pthread_mutex_lock(&clients_mutex);
@@ -294,6 +302,30 @@ void* thread_proc(void *arg)
             pthread_mutex_unlock(&clients_mutex); 
         }
     }
+}
+
+char * user_online(){
+    char *name;
+    char *name_list= malloc(MAX_NAME_LEN*(user_count + 1)); 
+    char names[MAX_NAME_LEN*(user_count + 1)];
+    int count = 0;
+    int point = 0;
+    for (int i = 0; i < MAX_USERS; i++) {
+        if(client_sockets[i]){
+            name = get_user_name(client_sockets[i]);
+            if(name != NULL){
+                strcpy(names+point, name);
+                point += strlen(name)+1;
+                names[point-1] = ',';
+            }
+            count++;
+        }
+    }
+    names[point-1] = '\n';
+    names[point] = '\0';
+    sprintf(name_list, "[%d] Online List: %s\0", count, names);
+    
+    return name_list;
 }
 
 int user_private_message(char buffer[], int prefix_len, int socket, struct private_message *pm){
@@ -341,16 +373,13 @@ int prefix_control(char prefix[], char buffer[]){
 int user_authentication(char buffer[], int prefix_len, int socket){
     int buffer_len = strlen(buffer);
     int name_len = buffer_len - prefix_len;
-    if(name_len >= MIN_NAME_LEN && name_len < MAX_NAME_LEN){
-        // name is in valid length.
-        char *name = malloc(sizeof(char)*MAX_NAME_LEN);
-        strcpy(name, buffer+prefix_len);
-        if(strstr(name, " ") == NULL){
-            return add_user(name, socket);
-        }
-        return 0;  
-    }
-    return 0;
+    int result = 0;
+    char *name = malloc(sizeof(char)*MAX_NAME_LEN);
+    strcpy(name, buffer+prefix_len);
+    pthread_mutex_lock(&clients_mutex);
+    result = add_user(name, socket);
+    pthread_mutex_unlock(&clients_mutex);
+    return result;
 }
 
 int user_exit_authentication(char buffer[], int prefix_len, int socket){
@@ -359,7 +388,7 @@ int user_exit_authentication(char buffer[], int prefix_len, int socket){
     return remove_user_by_socket(socket);
 }
 
-void broadcastMessage(char buffer[], int *clientSocket){ 
+void broadcast_message(char buffer[], int *clientSocket){ 
     int socket = *clientSocket;
     pthread_mutex_lock(&clients_mutex);
     for (int i = 0; i < MAX_USERS; i++) {
