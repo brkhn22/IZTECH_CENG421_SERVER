@@ -1,0 +1,4 @@
+baki {lale}
+lale {baki}
+brkhn {ali}
+ali {brkhn lale baki}

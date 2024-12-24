@@ -35,7 +35,7 @@ int main() {
     // Set up the server address structure
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_port = htons(port);  // Server port
-    serverAddr.sin_addr.s_addr = inet_addr("127.0.0.1");  // Server address (localhost)
+    serverAddr.sin_addr.s_addr = inet_addr("192.168.207.152");  // Server address (localhost)
     
 
     // Connect to the server
@@ -85,7 +85,7 @@ int main() {
                     // Set up the server address structure
                     serverAddr.sin_family = AF_INET;
                     serverAddr.sin_port = htons(port);  // Server port
-                    serverAddr.sin_addr.s_addr = inet_addr("127.0.0.1");  // Server address (localhost)
+                    serverAddr.sin_addr.s_addr = inet_addr("192.168.207.152");  // Server address (localhost)
                     // Connect to the server
                     if (connect(sock, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
                         perror("Connection to server failed");
