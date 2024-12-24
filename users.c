@@ -112,7 +112,7 @@ int user_name_validation(char *name){
     int result = 1;
     if(!name) return 0;
     len = strlen(name);
-    if(len <= MIN_NAME_LEN || len > (MAX_NAME_LEN-1)) return 0;
+    if(len < MIN_NAME_LEN || len > (MAX_NAME_LEN-1)) return 0;
     for(i = 0; i < len; i++){
         if(!((name[i] >= 'A' && name[i] <= 'Z') ||
         (name[i] >= 'a' && name[i] <= 'z') ||
