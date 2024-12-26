@@ -1,5 +1,7 @@
 baki {brkhn ali}
 lale {brkhn ali}
-brkhn {}
+brkhn {berkhan lale}
 ali {}
-
+berkhan {ali baki lale Serkan}
+Serkan {berkhan}
+true {}

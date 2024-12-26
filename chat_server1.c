@@ -31,10 +31,22 @@ struct register_struct { // this is used for requesting too, for they got same s
     char *password; 
 };
 
+struct accept_struct {
+    char *sender_data;
+    char *target_data;
+    int sender_line;
+    int target_line;
+    int sender_prefix_len;
+    int target_prefix_len;
+    int sender_count;
+    int target_count;
+};
+
 struct request_struct {
     char *data;
     int line;
     int count;
+    int prefix_len;
 };
 
 struct private_message {
@@ -55,6 +67,7 @@ void time_stamp_message(char *buffer, char name[]);
 void free_private_message(struct private_message *pm);
 void free_request_struct(struct request_struct *rs);
 void free_register_struct(struct register_struct *us);
+void free_accept_struct(struct accept_struct *as);
 
 int prefix_control(char prefix[], char buffer[]);
 char * user_online();
@@ -71,12 +84,12 @@ int user_register_append(char name[], char password[]);
 int user_request(char buffer[], int prefix_len, int socket, struct register_struct *us);
 int user_request_control(char *sender_name, char *target_name, struct request_struct *rs);
 int user_request_rewrite_append(char *sender_name, char *target_name, char data[], int line, int count);
-int user_request_rewrite_remove(char *sender_name, char *target_name, char data[], int line, int count);
+int user_request_rewrite_remove(char *sender_name, char *target_name, char data[], int line, int count, int index);
 int user_request_append(char *target_name);
 
 int user_accept(char buffer[], int prefix_len, int socket, struct register_struct *us);
-int user_accept_control(char *sender_name, char *target_name, struct request_struct *rs);
-int user_accept_rewrite_append(char *sender_name, char *target_name, char data[], int line, int count);
+int user_accept_control(char *sender_name, char *target_name, struct accept_struct *as);
+int user_accept_rewrite_append(char *sender_name, char *target_name, struct accept_struct *as);
 int user_accept_append(char *target_name);
 
 int server_registration_failed(char buffer [], int socket);
@@ -226,6 +239,7 @@ void* thread_proc(void *arg)
     struct private_message *pm = malloc(sizeof(struct private_message));
     struct request_struct *rs = malloc(sizeof(struct request_struct));
     struct register_struct *us = malloc(sizeof(struct register_struct));
+    struct accept_struct *as = malloc(sizeof(struct accept_struct));
     listensock = *((int*) arg);
     free(arg);
 
@@ -274,14 +288,13 @@ void* thread_proc(void *arg)
                                     time_stamp_message(buffer, SERVER);
                                     send(sock, buffer, strlen(buffer), 0);
                                 }
-                                free(us->name);
-                                free(us->password);
                             }else{
                                     authenticated = 0;
                                     strcpy(buffer, "Authentication is failed!");
                                     time_stamp_message(buffer, SERVER);
                                     send(sock, buffer, strlen(buffer), 0);
                             }
+                            free_register_struct(us);
                         }
                         
                     }else if(prefix_control(prefix_exit, buffer)){
@@ -310,16 +323,13 @@ void* thread_proc(void *arg)
                                 time_stamp_message(buffer, pm->sender_name);
                                 if(send(pm->socket, buffer, strlen(buffer), 0))
                                     printf("Private message has been sent to %d socket\n", pm->socket);
-                                if (pm->message) {
-                                    free(pm->message);
-                                    pm->message = NULL;
-                                }
 
                             }else{
                                 strcpy(buffer, "Private message could not be sent!");
                                 time_stamp_message(buffer, SERVER);
                                 send(sock, buffer, strlen(buffer), 0);
                             }
+                            free_private_message(pm);
                         }
                     }else if(prefix_control(prefix_online, buffer)){
                         // get online list of the server
@@ -352,9 +362,7 @@ void* thread_proc(void *arg)
                                     if(!server_registration_failed(buffer, sock))
                                         break;
                                 }
-                                free(us->name);
-                                free(us->password);
-                                
+                                free_register_struct(us);
                             }else{
                                 if(!server_registration_failed(buffer, sock))
                                     break;
@@ -365,93 +373,95 @@ void* thread_proc(void *arg)
                                 break;
                         }
                     }else if(prefix_control(prefix_request, buffer)){
-                        prefix_len = strlen(prefix_request);
-                        if(user_request(buffer, prefix_len, sock, us)){
-                            if(user_accept_control(us->name, us->password, rs)){
-                                // user is not accepted.
-                                    free(rs->data);
-                                    rs->line = 0;
-                                    rs->count = 0;
-                                if(user_request_control(us->name, us->password, rs)){
-                                    // user have not send any request yet.
-                                    if(user_request_rewrite_append(us->name, us->password, rs->data, rs->line, rs->count)) {
-                                        strcpy(buffer, "Request has been sent!");
-                                        time_stamp_message(buffer, SERVER);
-                                        send(sock, buffer, strlen(buffer), 0);
-                                    }else{
-                                        strcpy(buffer, "Request could not been sent!");
-                                        time_stamp_message(buffer, SERVER);
-                                        send(sock, buffer, strlen(buffer), 0);
-                                    }
-                                    free(rs->data);
-                                    rs->line = 0;
-                                    rs->count = 0;
-                                }else{
-                                    strcpy(buffer, "User has already been requested!");
-                                    time_stamp_message(buffer, SERVER);
-                                    send(sock, buffer, strlen(buffer), 0);
-                                }
-                                free(us->name);
-                                free(us->password);
-                            }else{
-                                strcpy(buffer, "You have already been accepted!");
-                                time_stamp_message(buffer, SERVER);
-                                send(sock, buffer, strlen(buffer), 0);
-                            }
-                        }else{
-                            strcpy(buffer, "There is no such a user!");
+                        if(!authenticated){
+                            strcpy(buffer, "Only authenticated users can do requesting");
                             time_stamp_message(buffer, SERVER);
                             send(sock, buffer, strlen(buffer), 0);
-                        }
-                    }else if(prefix_control(prefix_accept, buffer)){
-                        prefix_len = strlen(prefix_accept);
-                        if(user_accept(buffer, prefix_len, sock, us)){
-                            if(!user_request_control(us->name, us->password, rs)) {
-                                // an user have sent a request
-                                pthread_mutex_lock(&clients_mutex);
-                                if(user_request_rewrite_remove(us->name, us->password, rs->data, rs->line, rs->count)){
-                                    free(rs->data);
-                                    rs->line = 0;
-                                    rs->count = 0;
-
-                                    if(user_accept_control(us->name, us->password, rs)){
-                                        // if it is not accepted yet.
-                                        if(user_accept_rewrite_append(us->name, us->password, rs->data, rs->line, rs->count)){
-                                            strcpy(buffer, "User has been accepted!");
+                        }else{
+                            prefix_len = strlen(prefix_request);
+                            if(user_request(buffer, prefix_len, sock, us)){
+                                if(user_accept_control(us->name, us->password, as)){
+                                    // user is not accepted yet.
+                                    if(user_request_control(us->name, us->password, rs)){
+                                        // user have not send any request yet.
+                                        if(user_request_rewrite_append(us->name, us->password, rs->data, rs->line, rs->count)) {
+                                            strcpy(buffer, "Request has been sent!");
                                             time_stamp_message(buffer, SERVER);
                                             send(sock, buffer, strlen(buffer), 0);
                                         }else{
-                                            strcpy(buffer, "User has not been accepted!");
+                                            strcpy(buffer, "Request could not been sent!");
                                             time_stamp_message(buffer, SERVER);
                                             send(sock, buffer, strlen(buffer), 0);
                                         }
-                                        free(rs->data);
-                                        rs->line = 0;
-                                        rs->count = 0;
+
                                     }else{
-                                        strcpy(buffer, "User has already been accepted!");
+                                        strcpy(buffer, "User has already been requested!");
                                         time_stamp_message(buffer, SERVER);
                                         send(sock, buffer, strlen(buffer), 0);
                                     }
+                                    free_request_struct(rs);
+                                    free_register_struct(us);
                                 }else{
-                                    strcpy(buffer, "The request could not be removed!");
+                                    strcpy(buffer, "You have already been accepted!");
                                     time_stamp_message(buffer, SERVER);
                                     send(sock, buffer, strlen(buffer), 0);
                                 }
-                                pthread_mutex_unlock(&clients_mutex);
-                               
+                                free_accept_struct(as);
                             }else{
-                                strcpy(buffer, "There is no such a request!");
+                                strcpy(buffer, "There is no such a user!");
                                 time_stamp_message(buffer, SERVER);
                                 send(sock, buffer, strlen(buffer), 0);
                             }
-
-                            free(us->name);
-                            free(us->password);
-                        }else{
-                            strcpy(buffer, "User is not exists!");
+                        }
+                    }else if(prefix_control(prefix_accept, buffer)){
+                        if(!authenticated){
+                            strcpy(buffer, "Only authenticated users can have accepts");
                             time_stamp_message(buffer, SERVER);
                             send(sock, buffer, strlen(buffer), 0);
+                        }else{
+                            prefix_len = strlen(prefix_accept);
+                            if(user_accept(buffer, prefix_len, sock, us)){
+                                if(!user_request_control(us->name, us->password, rs)) {
+                                    // an user have sent a request
+                                    pthread_mutex_lock(&clients_mutex);
+                                    if(user_request_rewrite_remove(us->name, us->password, rs->data, rs->line, rs->count, rs->prefix_len)){
+                                        if(user_accept_control(us->name, us->password, as)){
+                                            // if it is not accepted yet.
+                                            if(user_accept_rewrite_append(us->name, us->password, as)){
+                                                strcpy(buffer, "User has been accepted!");
+                                                time_stamp_message(buffer, SERVER);
+                                                send(sock, buffer, strlen(buffer), 0);
+                                            }else{
+                                                strcpy(buffer, "User has not been accepted!");
+                                                time_stamp_message(buffer, SERVER);
+                                                send(sock, buffer, strlen(buffer), 0);
+                                            }
+                                            
+                                        }else{
+                                            strcpy(buffer, "User has been already accepted the user!");
+                                            time_stamp_message(buffer, SERVER);
+                                            send(sock, buffer, strlen(buffer), 0);
+                                        }
+                                        free_accept_struct(as);
+                                    }else{
+                                        strcpy(buffer, "The request could not be removed!");
+                                        time_stamp_message(buffer, SERVER);
+                                        send(sock, buffer, strlen(buffer), 0);
+                                    }
+                                    pthread_mutex_unlock(&clients_mutex);
+                                
+                                }else{
+                                    strcpy(buffer, "There is no such a request!");
+                                    time_stamp_message(buffer, SERVER);
+                                    send(sock, buffer, strlen(buffer), 0);
+                                }
+                                free_request_struct(rs);
+                                free_register_struct(us);
+                            }else{
+                                strcpy(buffer, "Invalid user!");
+                                time_stamp_message(buffer, SERVER);
+                                send(sock, buffer, strlen(buffer), 0);
+                            }
                         }
                     }
                 }else{
@@ -487,6 +497,14 @@ void* thread_proc(void *arg)
         }
     }
     printf("Thread %i with pid: #%i is not listening the port %d anymore!\n", pthread_self(), getpid(), port);
+    free_private_message(pm);
+    free_register_struct(us);
+    free_request_struct(rs);
+    free_accept_struct(as);
+    free(pm);
+    free(us);
+    free(rs);
+    free(as);
 }
 
 int server_registration_failed(char buffer [], int socket){
@@ -495,7 +513,7 @@ int server_registration_failed(char buffer [], int socket){
     return send(socket, buffer, strlen(buffer), 0);
 }
 
-int user_accept_control(char *sender_name, char *target_name, struct request_struct *rs){
+int user_accept_control(char *sender_name, char *target_name, struct accept_struct *as){
     if(!sender_name || !target_name) return 0;
     
     FILE *file = fopen(ACCEPT_FILE, "r");
@@ -511,9 +529,10 @@ int user_accept_control(char *sender_name, char *target_name, struct request_str
     int line = 0;
 
     while(fgets(temp_line, line_len, file)){
+        temp_line[strlen(temp_line)-1] = '\0';
         sscanf(temp_line, "%s {", temp_target_name);
         line++;
-        if(compare_strings(temp_target_name, target_name)){
+        if(strcmp(temp_target_name, target_name) == 0){
             i = strlen(temp_target_name)+2;
             j = 0;
             while(temp_line[i] != '}'){
@@ -526,8 +545,38 @@ int user_accept_control(char *sender_name, char *target_name, struct request_str
                 
                 count++;
                 if(count >= MAX_REQUEST){
-                    fclose(file);
-                    return 0;  // no room for requesting
+                    result = 0;
+                }
+
+                if(compare_strings(temp_sender_name, sender_name)){
+                    result = 0;
+                }
+                j = 0;
+                if(temp_line[i] == ' ') i++;
+            }
+
+            as->target_data = malloc(strlen(temp_line)+strlen(temp_target_name)+1);
+            if(as->target_data == NULL) return 0;
+
+            strcpy(as->target_data, temp_line);
+            as->target_line = line;
+            as->target_count = count;
+            as->target_prefix_len = i - strlen(temp_target_name);
+            count = 0;
+        }else if(strcmp(temp_target_name, sender_name) == 0){
+            i = strlen(temp_target_name)+2;
+            j = 0;
+            while(temp_line[i] != '}'){
+                while(temp_line[i] != ' ' && temp_line[i] != '}'){
+                    temp_sender_name[j] = temp_line[i];
+                    i++;
+                    j++;
+                }
+                temp_sender_name[j] = '\0';
+                
+                count++;
+                if(count >= MAX_REQUEST){
+                    result = 0;
                 }
 
                 if(compare_strings(temp_sender_name, sender_name)){
@@ -537,21 +586,22 @@ int user_accept_control(char *sender_name, char *target_name, struct request_str
                 j = 0;
                 if(temp_line[i] == ' ') i++;
             }
-            break;
+            as->sender_data = malloc(strlen(temp_line)+strlen(temp_target_name)+1);
+            if(as->sender_data == NULL) return 0;
+
+            strcpy(as->sender_data, temp_line);
+            as->sender_line = line;
+            as->sender_count = count;
+            as->sender_prefix_len = i - strlen(temp_target_name);
+            count = 0;
         }
     }
     fclose(file);
-
-    rs->data = malloc(strlen(temp_line)+strlen(temp_sender_name)+1);
-    if(rs->data == NULL) return 0;
-    strcpy(rs->data, temp_line);
-    rs->line = line;
-    rs->count = count;
     return result;
 }
 
-int user_accept_rewrite_append(char *sender_name, char *target_name, char data[], int line, int count){
-    if(!sender_name || !target_name) return 0;
+int user_accept_rewrite_append(char *sender_name, char *target_name, struct accept_struct *as){
+    if(!sender_name || !target_name || !as) return 0;
 
     FILE *file = fopen(ACCEPT_FILE, "r");
     if(!file) return 0;
@@ -562,26 +612,52 @@ int user_accept_rewrite_append(char *sender_name, char *target_name, char data[]
     char temp_line[line_len];
     int counter = 1;
     int i;
-    int data_len = strlen(data);
-    if(count > 0){
-        data[data_len-2] = ' ';
+
+    // update target accept list
+    int data_len = strlen(as->target_data);
+    char target_data[data_len + MAX_NAME_LEN + 1]; 
+    strcpy(target_data, as->target_data);
+    if(as->target_count > 0){
+        target_data[data_len-1] = ' ';
         for(i = 0; i < strlen(sender_name); i++)
-            data[i+data_len-1] = sender_name[i];
-        data[i+data_len-1] = '}';
-        data[i+data_len] = '\0';
+            target_data[i+data_len] = sender_name[i];
+        target_data[i+data_len] = '}';
+        target_data[i+data_len+1] = '\0';
     }else{
         for(i = 0; i < strlen(sender_name); i++)
-            data[i+data_len-2] = sender_name[i];
-        data[i+data_len-2] = '}';
-        data[i+data_len-1] = '\0';
+            target_data[i+data_len-1] = sender_name[i];
+        target_data[i+data_len-1] = '}';
+        target_data[i+data_len] = '\0';
     }
 
+    // update sender accept list
+    data_len = strlen(as->sender_data);
+    char sender_data[data_len + MAX_NAME_LEN + 1];
+    strcpy(sender_data, as->sender_data);
+    i = 0;
+    if(as->sender_count > 0){
+        sender_data[data_len-1] = ' ';
+        for(i = 0; i < strlen(target_name); i++)
+            sender_data[i+data_len] = target_name[i];
+        sender_data[i+data_len] = '}';
+        sender_data[i+data_len+1] = '\0';
+    }else{
+        for(i = 0; i < strlen(target_name); i++)
+            sender_data[i+data_len-1] = target_name[i];
+        sender_data[i+data_len-1] = '}';
+        sender_data[i+data_len] = '\0';
+    }
+
+//    printf("sender data: %s\ntarget data: %s count: %d\n", as->sender_data, as->target_data, as->sender_count);
+
     while (fgets(temp_line, sizeof(temp_line), file)) {
-        if (counter == line) {
-            // Replace the specific line with updated data
-            fprintf(temp_file, "%s\n", data);
-        } else {
-            // Copy the existing line
+        if (counter == as->target_line) {
+            // Replace the target's line with updated data
+            fprintf(temp_file, "%s\n", target_data);
+        }else if(counter == as->sender_line) {
+            // Replace the sender's line with updated data
+            fprintf(temp_file, "%s\n", sender_data);
+        }else {
             fputs(temp_line, temp_file);
         }
         counter++;
@@ -590,7 +666,7 @@ int user_accept_rewrite_append(char *sender_name, char *target_name, char data[]
     fclose(file);
     fclose(temp_file);
 
-    // Replace the original file with the updated temp file
+    // rename the file as its original.
     remove(ACCEPT_FILE);
     rename("temp_accepts.txt", ACCEPT_FILE);
     return 1;
@@ -674,7 +750,7 @@ int user_request(char buffer[], int prefix_len, int socket, struct register_stru
     return 1;
 }
 
-int user_request_rewrite_remove(char *sender_name, char *target_name, char data[], int line, int count){
+int user_request_rewrite_remove(char *sender_name, char *target_name, char data[], int line, int count, int prefix_len){
     if(!sender_name || !target_name) return 0;
     if(count <= 0) return 0;
 
@@ -687,12 +763,11 @@ int user_request_rewrite_remove(char *sender_name, char *target_name, char data[
     char temp_line[line_len];
     int counter = 1;
     int i;
+    int j;
     int data_len = strlen(data);
     int sender_len = strlen(sender_name);
-    char *point, *temp_point;
-    point = strstr(data, sender_name);
-    
-    if((point + sender_len+2) == (data+data_len)){
+    char *point = &data[prefix_len];
+    if((point + sender_len+1) == (data+data_len)){
         if(*(point-1)==' '){
             *(point-1) = '}';
             *(point) = '\0'; 
@@ -701,7 +776,7 @@ int user_request_rewrite_remove(char *sender_name, char *target_name, char data[
             *(point+1) = '\0'; 
         }
     }else{
-        while(point < (data+data_len-1)){
+        while(point < (data+data_len-2)){
             *point = *(point+sender_len+1);
             point++;
         }
@@ -713,7 +788,7 @@ int user_request_rewrite_remove(char *sender_name, char *target_name, char data[
             fprintf(temp_file, "%s\n", data);
         } else {
             // Copy the existing line
-            fprintf(temp_file,"%s", temp_line);
+            fputs(temp_line, temp_file);
         }
         counter++;
     }
@@ -741,23 +816,26 @@ int user_request_rewrite_append(char *sender_name, char *target_name, char data[
     int counter = 1;
     int i;
     int data_len = strlen(data);
+    int new_len = data_len + MAX_NAME_LEN + 1;
+    char temp_data[new_len];
+    strcpy(temp_data, data);
     if(count > 0){
-        data[data_len-2] = ' ';
+        temp_data[data_len-1] = ' ';
         for(i = 0; i < strlen(sender_name); i++)
-            data[i+data_len-1] = sender_name[i];
-        data[i+data_len-1] = '}';
-        data[i+data_len] = '\0';
+            temp_data[i+data_len] = sender_name[i];
+        temp_data[i+data_len] = '}';
+        temp_data[i+data_len+1] = '\0';
     }else{
         for(i = 0; i < strlen(sender_name); i++)
-            data[i+data_len-2] = sender_name[i];
-        data[i+data_len-2] = '}';
-        data[i+data_len-1] = '\0';
+            temp_data[i+data_len-1] = sender_name[i];
+        temp_data[i+data_len-1] = '}';
+        temp_data[i+data_len] = '\0';
     }
 
     while (fgets(temp_line, sizeof(temp_line), file)) {
         if (counter == line) {
             // Replace the specific line with updated data
-            fprintf(temp_file, "%s\n", data);
+            fprintf(temp_file, "%s\n", temp_data);
         } else {
             // Copy the existing line
             fputs(temp_line, temp_file);
@@ -789,13 +867,16 @@ int user_request_control(char *sender_name, char *target_name, struct request_st
     int j;
     int count = 0;
     int line = 0;
+    int prefix_len = 0;
 
     while(fgets(temp_line, line_len, file)){
+        temp_line[strlen(temp_line)-1] = '\0'; // remove '\n'
         sscanf(temp_line, "%s {", temp_target_name);
         line++;
         if(compare_strings(temp_target_name, target_name)){
             i = strlen(temp_target_name)+2;
             j = 0;
+            prefix_len = i;
             while(temp_line[i] != '}'){
                 while(temp_line[i] != ' ' && temp_line[i] != '}'){
                     temp_sender_name[j] = temp_line[i];
@@ -803,16 +884,16 @@ int user_request_control(char *sender_name, char *target_name, struct request_st
                     j++;
                 }
                 temp_sender_name[j] = '\0';
-                
                 count++;
                 if(count >= MAX_REQUEST){
                     fclose(file);
                     return 0;  // no room for requesting
                 }
-
+                
                 if(compare_strings(temp_sender_name, sender_name)){
                     // a request has already been sent
                     result = 0;
+                    prefix_len = (i-strlen(temp_sender_name));
                 }
                 j = 0;
                 if(temp_line[i] == ' ') i++;
@@ -827,6 +908,7 @@ int user_request_control(char *sender_name, char *target_name, struct request_st
     strcpy(rs->data, temp_line);
     rs->line = line;
     rs->count = count;
+    rs->prefix_len = prefix_len;
     return result;
 }
 
@@ -943,7 +1025,7 @@ int user_registration_control(char name[]){
     char temp_name[MAX_NAME_LEN];
     while(fgets(line, line_len, file)){
         sscanf(line, "%s ", temp_name);
-        if(compare_strings(temp_name, name)){ // the name has already been registered.
+        if(strcmp(temp_name, name) == 0){ // the name has already been registered.
             fclose(file);
             return 1;
         }
@@ -1045,9 +1127,9 @@ int user_authentication(char name[], char password[], int socket) {
 
     while(fgets(line, line_len, file)){
         sscanf(line, "%s %s", temp_name, temp_password);
-        if(compare_strings(temp_name, name)){
+        if(strcmp(temp_name, name) == 0){
             // the name is exist
-            if(compare_strings(temp_password, password)){
+            if(strcmp(temp_password, password) == 0){
                 result = 1;
             }
             break;
@@ -1112,19 +1194,8 @@ void free_private_message(struct private_message *pm){
             free(pm->message);
             pm->message = NULL;
         }
-        free(pm);
     }
 
-}
-
-void free_request_struct(struct request_struct *rs){
-    if(rs){
-        if(rs->data)
-            free(rs->data);
-        rs->line = 0;
-        rs->count = 0;
-        free(rs);
-    }
 }
 
 void free_register_struct(struct register_struct *us) {
@@ -1133,6 +1204,36 @@ void free_register_struct(struct register_struct *us) {
             free(us->name);
         if(us->password)
             free(us->password);
-        free(us);
+        us->name = NULL;
+        us->password = NULL;
+    }
+}
+
+
+void free_request_struct(struct request_struct *rs){
+    if(rs){
+        if(rs->data)
+            free(rs->data);
+        rs->data = NULL;
+        rs->line = 0;
+        rs->count = 0;
+        rs->prefix_len = 0;
+    }
+}
+
+void free_accept_struct(struct accept_struct *as){
+    if(as){
+        if(as->sender_data)
+            free(as->sender_data);
+        if(as->target_data)
+            free(as->target_data);
+        as->sender_data = NULL;
+        as->target_data = NULL;
+        as->sender_line = 0;
+        as->target_line = 0;
+        as->sender_prefix_len = 0;
+        as->target_prefix_len = 0;
+        as->sender_count = 0;
+        as->target_count = 0;
     }
 }
