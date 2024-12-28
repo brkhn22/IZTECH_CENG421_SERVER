@@ -16,15 +16,22 @@ int client_sockets[MAX_USERS];
 
 // prefixes
 char prefix_exit[] = "/exit";
-char prefix_friends[] = "/friends";
+char prefix_accepts[] = "/accepts";
 char prefix_online[] = "/online";
 char prefix_requests[] = "/requests";
+char prefix_online_accepts[] = "/online_accepts"; // TO DO: online friends lists. (which room they are?)
 char prefix_private[] = "/private ";
 char prefix_register[] = "/register ";
 char prefix_request[] = "/request ";
 char prefix_accept[] = "/accept ";
+char prefix_remove[] = "/remove ";
+char prefix_decline[] = "/decline ";
 char prefix_authenticate[] = "/authenticate ";
 
+struct users_struct {
+    char *names;
+    int count;
+};
 
 struct register_struct { // this is used for requesting too, for they got same size char sequences.
     char *name; // name should be unique
@@ -68,14 +75,18 @@ void free_private_message(struct private_message *pm);
 void free_request_struct(struct request_struct *rs);
 void free_register_struct(struct register_struct *us);
 void free_accept_struct(struct accept_struct *as);
+void free_users_struct (struct users_struct *uss);
 
 int prefix_control(char prefix[], char buffer[]);
-char * user_online();
+int user_online(struct users_struct *uss);
 void close_socket(int socket);
 
 int user_authentication (char name[], char password[], int socket);
 int user_exit_authentication(char buffer[], int prefix_len, int socket);
 int user_private_message(char buffer[], int prefix_len, int socket, struct private_message *pm);
+int user_online_list_append(int socket, int room);
+int user_online_list_remove(int socket);
+int user_online_list_accepts(int socket, struct users_struct *uss);
 
 int user_register(char buffer[], int prefix_len, struct register_struct *us);
 int user_registration_control(char name[]);
@@ -86,11 +97,14 @@ int user_request_control(char *sender_name, char *target_name, struct request_st
 int user_request_rewrite_append(char *sender_name, char *target_name, char data[], int line, int count);
 int user_request_rewrite_remove(char *sender_name, char *target_name, char data[], int line, int count, int index);
 int user_request_append(char *target_name);
+int user_requests(int socket, struct users_struct *uss);
 
 int user_accept(char buffer[], int prefix_len, int socket, struct register_struct *us);
 int user_accept_control(char *sender_name, char *target_name, struct accept_struct *as);
 int user_accept_rewrite_append(char *sender_name, char *target_name, struct accept_struct *as);
+int user_accept_rewrite_remove(char *sender_name, char *target_name, struct accept_struct *as);
 int user_accept_append(char *target_name);
+int user_accepts(int socket, struct users_struct *uss);
 
 int server_registration_failed(char buffer [], int socket);
 
@@ -205,7 +219,7 @@ void* main_proc (void *arg){
     snprintf(buffer, MAX_HEADER_SIZE, "Open Room List:\n");
     for(i = 1; i < child_size; i++){
         char portchar[20];
-        snprintf(portchar,20,"Port: %i\n",i+MAIN_PORT);
+        snprintf(portchar,20,"/room %d\n", i);
         strcat(buffer, portchar);
     }
     printf("Thread %i with pid: #%i listening the port %d!\n", pthread_self(), getpid(), MAIN_PORT);
@@ -240,11 +254,14 @@ void* thread_proc(void *arg)
     struct request_struct *rs = malloc(sizeof(struct request_struct));
     struct register_struct *us = malloc(sizeof(struct register_struct));
     struct accept_struct *as = malloc(sizeof(struct accept_struct));
+    struct users_struct *uss = malloc(sizeof(struct users_struct));
+
     listensock = *((int*) arg);
     free(arg);
 
     if(getsockname(listensock, (struct sockaddr *)&addr, &addr_len) == -1) return 0;
     int port = ntohs(addr.sin_port);
+    int room = port - MAIN_PORT;
 
     printf("Thread %i with pid: #%i listening the port %d!\n", pthread_self(), getpid(), port);
     initialize_users();
@@ -256,6 +273,9 @@ void* thread_proc(void *arg)
             for (int i = 0; i < MAX_USERS; i++) {
                 if (client_sockets[i] == 0) {
                     client_sockets[i] = sock;
+                    sprintf(buffer, "You have joined the room %d", room);
+                    time_stamp_message(buffer, SERVER);
+                    send(sock, buffer, strlen(buffer), 0);
                     break;
                 }
             }
@@ -279,9 +299,20 @@ void* thread_proc(void *arg)
                                 authentication_checker = user_authentication(us->name, us->password, sock);
                                 if(authentication_checker){
                                     authenticated = authentication_checker;
-                                    strcpy(buffer, "Authentication is done!");
-                                    time_stamp_message(buffer, SERVER);
-                                    send(sock, buffer, strlen(buffer), 0);
+                                    pthread_mutex_lock(&clients_mutex);
+                                    if(user_online_list_append(sock, room)){
+                                        // added to the online list.
+                                        strcpy(buffer, "Authentication is done!");
+                                        time_stamp_message(buffer, SERVER);
+                                        send(sock, buffer, strlen(buffer), 0);
+                                    }else{
+                                        // it authenticated but couldn't added to the online list.
+                                        user_exit_authentication(buffer, strlen(prefix_exit), sock);
+                                        strcpy(buffer, "Authentication is failed!");
+                                        time_stamp_message(buffer, SERVER);
+                                        send(sock, buffer, strlen(buffer), 0);
+                                    }
+                                    pthread_mutex_unlock(&clients_mutex);
                                 }else{
                                     authenticated = 0;
                                     strcpy(buffer, "Authentication is failed!");
@@ -299,6 +330,7 @@ void* thread_proc(void *arg)
                         
                     }else if(prefix_control(prefix_exit, buffer)){
                         prefix_len = strlen(prefix_exit);
+                        pthread_mutex_lock(&clients_mutex);
                         if(authenticated && user_exit_authentication(buffer, prefix_len, sock)){
                             authenticated = 0;
                             strcpy(buffer, "Authentication is removed!");
@@ -310,6 +342,7 @@ void* thread_proc(void *arg)
                             time_stamp_message(buffer, SERVER);
                             send(sock, buffer, strlen(buffer), 0);
                         }
+                        pthread_mutex_unlock(&clients_mutex);
                     }else if(prefix_control(prefix_private, buffer)){
                         prefix_len = strlen(prefix_private);
                         if(!authenticated){
@@ -331,13 +364,6 @@ void* thread_proc(void *arg)
                             }
                             free_private_message(pm);
                         }
-                    }else if(prefix_control(prefix_online, buffer)){
-                        // get online list of the server
-                        char *user_list = user_online();
-                        strcpy(buffer, user_list);
-                        time_stamp_message(buffer, SERVER);
-                        send(sock, buffer, strlen(buffer), 0);
-                        free(user_list);
                     }else if(prefix_control(prefix_register, buffer)){
                         if(!authenticated){
                             // valid registration type is /register name password
@@ -463,6 +489,148 @@ void* thread_proc(void *arg)
                                 send(sock, buffer, strlen(buffer), 0);
                             }
                         }
+                    }else if(prefix_control(prefix_requests, buffer)){
+                        if(!authenticated){
+                            strcpy(buffer, "Only authenticated users can see the requests!");
+                            time_stamp_message(buffer, SERVER);
+                            send(sock, buffer, strlen(buffer), 0);
+                        }else{
+                            if(!authenticated){
+                            strcpy(buffer, "Only authenticated users can see the accepts!");
+                            time_stamp_message(buffer, SERVER);
+                            send(sock, buffer, strlen(buffer), 0);
+                            }else{
+                                if(user_requests(sock, uss)){
+                                    sprintf(buffer, "[%d] Requests List: %s", uss->count, uss->names);
+                                    time_stamp_message(buffer, SERVER);
+                                    send(sock, buffer, strlen(buffer), 0);
+                                }else{
+                                    strcpy(buffer, "Failed to take the requests!");
+                                    time_stamp_message(buffer, SERVER);
+                                    send(sock, buffer, strlen(buffer), 0);
+                                }
+                                free_users_struct(uss);
+                            }
+                        }
+                    }else if(prefix_control(prefix_accepts, buffer)){
+                        if(!authenticated){
+                            strcpy(buffer, "Only authenticated users can see the accepts!");
+                            time_stamp_message(buffer, SERVER);
+                            send(sock, buffer, strlen(buffer), 0);
+                        }else{
+                            if(user_accepts(sock, uss)){
+                                sprintf(buffer, "[%d] Accepts List: %s", uss->count, uss->names);
+                                time_stamp_message(buffer, SERVER);
+                                send(sock, buffer, strlen(buffer), 0);
+                            }else{
+                                strcpy(buffer, "Failed to take the accepts!");
+                                time_stamp_message(buffer, SERVER);
+                                send(sock, buffer, strlen(buffer), 0);
+                            }
+                            free_users_struct(uss);
+                        }
+                    }else if(prefix_control(prefix_decline, buffer)){
+                        if(!authenticated){
+                            strcpy(buffer, "Only authenticated users can decline the requests");
+                            time_stamp_message(buffer, SERVER);
+                            send(sock, buffer, strlen(buffer), 0);
+                        }else{
+                            prefix_len = strlen(prefix_decline);
+                            // gets same target_name and sender_name for decline
+                            if(user_accept(buffer, prefix_len, sock, us)){
+                                if(!user_request_control(us->name, us->password, rs)) {
+                                    // an user have sent a request
+                                    pthread_mutex_lock(&clients_mutex);
+                                    if(user_request_rewrite_remove(us->name, us->password, rs->data, rs->line, rs->count, rs->prefix_len)){
+                                        strcpy(buffer, "The user has been declined!");
+                                        time_stamp_message(buffer, SERVER);
+                                        send(sock, buffer, strlen(buffer), 0);
+                                        
+                                    }else{
+                                        strcpy(buffer, "The user could not been declined!");
+                                        time_stamp_message(buffer, SERVER);
+                                        send(sock, buffer, strlen(buffer), 0);
+                                    }
+                                    pthread_mutex_unlock(&clients_mutex);
+                                
+                                }else{
+                                    strcpy(buffer, "There is no such a request!");
+                                    time_stamp_message(buffer, SERVER);
+                                    send(sock, buffer, strlen(buffer), 0);
+                                }
+                                free_request_struct(rs);
+                                
+                            }else{
+                                strcpy(buffer, "Invalid user!");
+                                time_stamp_message(buffer, SERVER);
+                                send(sock, buffer, strlen(buffer), 0);
+                            }
+                            free_register_struct(us);
+                        }
+                    }else if(prefix_control(prefix_remove, buffer)){
+                        if(!authenticated){
+                            strcpy(buffer, "Only authenticated users can remove accepts");
+                            time_stamp_message(buffer, SERVER);
+                            send(sock, buffer, strlen(buffer), 0);
+                        }else{
+                            prefix_len = strlen(prefix_accept);
+                            if(user_accept(buffer, prefix_len, sock, us)){
+                                if(!user_accept_control(us->name, us->password, as)){
+                                    // if it is accepted.
+                                     pthread_mutex_lock(&clients_mutex);
+                                    if(user_accept_rewrite_remove(us->name, us->password, as)){
+                                        strcpy(buffer, "User has been removed!");
+                                        time_stamp_message(buffer, SERVER);
+                                        send(sock, buffer, strlen(buffer), 0);
+                                    }else{
+                                        strcpy(buffer, "User could not been removed!");
+                                        time_stamp_message(buffer, SERVER);
+                                        send(sock, buffer, strlen(buffer), 0);
+                                    }
+                                    pthread_mutex_unlock(&clients_mutex); 
+                                }else{
+                                    strcpy(buffer, "There is no such a user accepted!");
+                                    time_stamp_message(buffer, SERVER);
+                                    send(sock, buffer, strlen(buffer), 0);
+                                }
+                                free_accept_struct(as);
+                                free_request_struct(rs);
+                            }else{
+                                strcpy(buffer, "Invalid user!");
+                                time_stamp_message(buffer, SERVER);
+                                send(sock, buffer, strlen(buffer), 0);
+                            }
+                            free_register_struct(us);
+                        }
+                    }else if(prefix_control(prefix_online_accepts, buffer)){
+                        if(!authenticated){
+                                strcpy(buffer, "Only authenticated users can see the online accepts");
+                                time_stamp_message(buffer, SERVER);
+                                send(sock, buffer, strlen(buffer), 0);
+                        }else{
+                            if(user_accepts(sock, uss)){
+                                if(user_online_list_accepts(sock, uss)){
+                                    sprintf(buffer, "[%d] Online Accepts: %s", uss->count, uss->names);
+                                    time_stamp_message(buffer, SERVER);
+                                    send(sock, buffer, strlen(buffer), 0);
+                                }
+                            }else{
+                                strcpy(buffer, "Could not be reached to the accepts");
+                                time_stamp_message(buffer, SERVER);
+                                send(sock, buffer, strlen(buffer), 0);
+                            }
+                            free_users_struct(uss);
+                        }
+
+                    }else if(prefix_control(prefix_online, buffer)){
+                        // get online list of the server
+                        if(user_online(uss)){
+                            sprintf(buffer, "[%d] Online List: %s", uss->count, uss->names);
+                            time_stamp_message(buffer, SERVER);
+                            send(sock, buffer, strlen(buffer), 0);
+                        }
+                        free_users_struct(uss);
+                        
                     }
                 }else{
                     if(!authenticated) {
@@ -483,10 +651,13 @@ void* thread_proc(void *arg)
             for (int i = 0; i < MAX_USERS; i++) {
                 if (client_sockets[i] == sock) {
                     client_sockets[i] = 0;
-                    free_private_message(pm);
-                    remove_user_by_socket(sock);
-                    authenticated = 0;
+                    if(authenticated){
+                        user_online_list_remove(sock);
+                        remove_user_by_socket(sock);
+                        authenticated = 0;
+                    }
                     authentication_checker = 0;
+
                     close(sock);
                     printf("client disconnected from child thread %i with pid %i.\n", pthread_self(), getpid());
                     sock = -1;
@@ -501,16 +672,288 @@ void* thread_proc(void *arg)
     free_register_struct(us);
     free_request_struct(rs);
     free_accept_struct(as);
+    free_users_struct(uss);
     free(pm);
     free(us);
     free(rs);
     free(as);
+    free(uss);
 }
 
 int server_registration_failed(char buffer [], int socket){
     strcpy(buffer, "Registration has been failed!");
     time_stamp_message(buffer, SERVER);
     return send(socket, buffer, strlen(buffer), 0);
+}
+
+int user_online_list_append(int socket, int room){
+    if(!socket || room < 1) return 0;
+
+    char *name = get_user_name(socket);
+    if(!name) return 0;
+
+    FILE *file = fopen(ONLINE_FILE, "a");
+    if(!file) return 0;
+    int line_len = MAX_NAME_LEN+10;
+    char line[line_len];
+    sprintf(line,"%s /room %d",name, room);
+    fprintf(file, "%s\n", line);
+    fclose(file);
+    return 1;
+}
+
+
+int user_requests(int socket, struct users_struct *uss){
+    if(!socket) return 0;
+
+    FILE *file = fopen(REQUEST_FILE, "r");
+    if(!file) return 0;
+    char *name = get_user_name(socket);
+    if(!name) {
+        fclose(file);
+        return 0;
+    }
+
+    int line_len = MAX_NAME_LEN*(MAX_REQUEST+4);
+    char line[line_len];
+    char temp_name[MAX_NAME_LEN];
+    char names[MAX_NAME_LEN*(MAX_REQUEST+2)];
+    memset(names, 0, strlen(names));
+    char *names_list = malloc(line_len);
+    if(!names_list){
+        fclose(file);
+        return 0;
+    };
+    char *line_p;
+    int i = 0;
+    int count = 0;
+    while(fgets(line, line_len, file)){
+        sscanf(line, "%s ", temp_name);
+        line[strlen(line)-1] = '\0';
+        if(strcmp(temp_name, name) == 0){
+            
+            line_p = &line[strlen(temp_name)];
+            while(*line_p == ' ') line_p++;
+            if(*line_p == '{'){
+                line_p++;
+                if(*line_p != '}'){
+                    while(*line_p != '\0'){
+                        while(*line_p != ' ' && *line_p != '}'){
+                            names [i] = *line_p;
+                            line_p++;
+                            i++;
+                        }
+                        count++;
+                        if(*line_p == ' '){
+                            names[i] = ',';
+                            names[++i] = ' ';
+                        }
+                        line_p++;
+                        i++;
+                    }
+                    names[i-1] = '\0';
+                }
+            }
+            
+            break;
+        }
+    }
+
+    fclose(file);
+    if(!names){
+        fclose(file);
+        return 0;
+    }
+    uss->names = malloc(strlen(names)+1);
+    if(uss->names){
+        strcpy(uss->names, names);
+        uss->count = count;
+    }else return 0;
+    return 1;
+}
+
+int user_accepts(int socket, struct users_struct *uss){
+    if(!socket) return 0;
+
+    FILE *file = fopen(ACCEPT_FILE, "r");
+    if(!file) return 0;
+    char *name = get_user_name(socket);
+    if(!name) {
+        fclose(file);
+        return 0;
+    };
+    int line_len = MAX_NAME_LEN*(MAX_REQUEST+3);
+    char line[line_len];
+    char temp_name[MAX_NAME_LEN];
+    char names[MAX_NAME_LEN*(MAX_REQUEST+2)];
+    memset(names, 0, strlen(names));
+    char *names_list = malloc(line_len);
+    if(!names_list){
+        fclose(file);
+        return 0;
+    };
+    char *line_p;
+    int i = 0;
+    int count = 0;
+    while(fgets(line, line_len, file)){
+        sscanf(line, "%s ", temp_name);
+        line[strlen(line)-1] = '\0';
+        if(strcmp(temp_name, name) == 0){
+            
+            line_p = &line[strlen(temp_name)];
+            while(*line_p == ' ') line_p++;
+
+            if(*line_p == '{'){
+                line_p++;
+                if(*line_p != '}'){
+                    while(*line_p != '\0'){
+                        while(*line_p != ' ' && *line_p != '}'){
+                            names[i] = *line_p;
+                            line_p++;
+                            i++;
+                        }
+                        count++;
+                        if(*line_p == ' '){
+                            names[i] = ',';
+                            names[++i] = ' ';
+                        }
+                        line_p++;
+                        i++;
+                    }
+                    names[i-1] = '\0';
+                }
+            }
+            
+            break;
+        }
+    }
+    fclose(file);
+    if(!names) return 0;
+    uss->names = malloc(strlen(names)+1);
+    if(uss->names){
+        strcpy(uss->names, names);
+        uss->count = count;
+    }else return 0;
+    
+    return 1;
+}
+
+int user_online(struct users_struct *uss){
+    if(user_count == 0) return 0;
+    char *name;
+    char names[MAX_NAME_LEN*(user_count + 2)];
+    memset(names, 0, strlen(names));
+    int count = 0;
+    int point = 0;
+    for (int i = 0; i < MAX_USERS; i++) {
+        if(client_sockets[i]){
+            name = get_user_name(client_sockets[i]);
+            if(name != NULL){
+                strcpy(names+point, name);
+                point += strlen(name);
+                names[point] = ',';
+                names[++point] = ' ';
+                ++point;
+            }
+            count++;
+        }
+    }
+    names[point-2] = '\0';
+    uss->names = malloc(strlen(names)+1);
+    if(uss->names){
+        strcpy(uss->names, names);
+        uss->count = count;
+    }else return 0;
+    
+    return 1;
+}
+
+int user_online_list_accepts(int socket, struct users_struct *uss){
+    if(!socket || !uss) return 0;
+    if(!uss->names) return 0;
+    
+    FILE *file = fopen(ONLINE_FILE, "r");
+    if(!file) return 0;
+    int line_len = MAX_NAME_LEN+12;
+    char line[line_len];
+    char temp_name[MAX_NAME_LEN];
+    char name[MAX_NAME_LEN];
+    char names[line_len*(MAX_REQUEST)];
+    memset(names, 0, strlen(names));
+    int i;
+    int j;
+    int k = 0;
+    int count = 0;
+    while(fgets(line, line_len, file)){
+        line[strlen(line)-1] = '\0';
+        sscanf(line, "%s ", temp_name);
+        i = 0;
+        j = 0;
+        while(uss->names[i] != '\0'){
+            while(uss->names[i] != ',' && uss->names[i] != '\0'){
+                name[j] = uss->names[i];
+                i++;
+                j++;
+            }
+            name[j] = '\0';
+
+            if(strcmp(temp_name, name) == 0){
+                count ++;
+                for(j = 0; j < strlen(line); j++){
+                    names[k] = line[j];
+                    k++;
+                }
+                names[k] = ',';
+                names[++k] = ' ';
+                k++;
+            }
+
+            if(uss->names[i] == ','){
+                i += 2;
+                j = 0;
+            }
+        }
+       
+    }
+    fclose(file);
+    if(count > 0) names[k-2] = '\0';
+    free(uss->names);
+    uss->names = malloc (strlen(names));
+    strcpy(uss->names, names);
+    uss->count = count;
+
+    return 1;
+
+}
+
+int user_online_list_remove(int socket){
+    if(!socket) return 0;
+
+    char *name = get_user_name(socket);
+    if(!name) return 0;
+
+    FILE *file = fopen(ONLINE_FILE, "r");
+    if(!file) return 0;
+    FILE *temp_file = fopen("temp_online_list.txt", "w");
+    if(!temp_file){
+        fclose(file);
+        return 0;
+    }
+    int line_len = MAX_NAME_LEN+10;
+    char line[line_len];
+    char temp_name [MAX_NAME_LEN];
+    while (fgets(line, line_len, file)) {
+        line[strlen(line)-1] = '\0';
+        sscanf(line, "%s ", temp_name);
+        if(strcmp(temp_name, name) != 0)
+            fprintf(temp_file, "%s\n", line);
+        
+    }
+    fclose(file);
+    fclose(temp_file);
+    remove(ONLINE_FILE);
+    rename("temp_online_list.txt", ONLINE_FILE);
+    return 1;
 }
 
 int user_accept_control(char *sender_name, char *target_name, struct accept_struct *as){
@@ -525,13 +968,15 @@ int user_accept_control(char *sender_name, char *target_name, struct accept_stru
     char temp_sender_name [MAX_NAME_LEN];
     int i;
     int j;
-    int count = 0;
+    int count;
     int line = 0;
-
+    int prefix_len;
     while(fgets(temp_line, line_len, file)){
         temp_line[strlen(temp_line)-1] = '\0';
         sscanf(temp_line, "%s {", temp_target_name);
         line++;
+        prefix_len = 0;
+        count = 0;
         if(strcmp(temp_target_name, target_name) == 0){
             i = strlen(temp_target_name)+2;
             j = 0;
@@ -550,19 +995,19 @@ int user_accept_control(char *sender_name, char *target_name, struct accept_stru
 
                 if(compare_strings(temp_sender_name, sender_name)){
                     result = 0;
+                    prefix_len = (i-strlen(temp_sender_name));
                 }
                 j = 0;
                 if(temp_line[i] == ' ') i++;
             }
 
-            as->target_data = malloc(strlen(temp_line)+strlen(temp_target_name)+1);
+            as->target_data = malloc(strlen(temp_line)+strlen(sender_name)+1);
             if(as->target_data == NULL) return 0;
 
             strcpy(as->target_data, temp_line);
             as->target_line = line;
             as->target_count = count;
-            as->target_prefix_len = i - strlen(temp_target_name);
-            count = 0;
+            as->target_prefix_len = prefix_len;
         }else if(strcmp(temp_target_name, sender_name) == 0){
             i = strlen(temp_target_name)+2;
             j = 0;
@@ -577,27 +1022,107 @@ int user_accept_control(char *sender_name, char *target_name, struct accept_stru
                 count++;
                 if(count >= MAX_REQUEST){
                     result = 0;
+                    
                 }
 
-                if(compare_strings(temp_sender_name, sender_name)){
+                if(compare_strings(temp_sender_name, target_name)){
                     // a request has already been sent
                     result = 0;
+                    prefix_len = (i-strlen(temp_sender_name));
                 }
                 j = 0;
                 if(temp_line[i] == ' ') i++;
             }
-            as->sender_data = malloc(strlen(temp_line)+strlen(temp_target_name)+1);
+            as->sender_data = malloc(strlen(temp_line)+strlen(target_name)+1);
             if(as->sender_data == NULL) return 0;
 
             strcpy(as->sender_data, temp_line);
             as->sender_line = line;
             as->sender_count = count;
-            as->sender_prefix_len = i - strlen(temp_target_name);
-            count = 0;
+            as->sender_prefix_len = prefix_len;
         }
     }
     fclose(file);
     return result;
+}
+
+int user_accept_rewrite_remove(char *sender_name, char *target_name, struct accept_struct *as){
+    if(!sender_name || !target_name) return 0;
+    if(as->sender_count <= 0 || as->target_count <= 0) return 0;
+
+    FILE *file = fopen(ACCEPT_FILE, "r");
+    if(!file) return 0;
+    FILE *temp_file = fopen("temp_accepts.txt", "w");
+    if(!temp_file) {
+        fclose(file);
+        return 0;
+    }
+
+    int line_len = MAX_NAME_LEN*(MAX_REQUEST+3);
+    char temp_line[line_len];
+    int counter = 1;
+
+    int target_data_len = strlen(as->target_data);
+    int sender_data_len = strlen(as->sender_data);
+    char temp_target_data[target_data_len];
+    char temp_sender_data[sender_data_len];
+    strcpy(temp_target_data, as->target_data);
+    strcpy(temp_sender_data, as->sender_data);
+
+    int sender_len = strlen(sender_name);
+    int target_len = strlen(target_name);
+
+    char *point = &temp_target_data[as->target_prefix_len];
+    if((point + sender_len+1) == (temp_target_data+target_data_len)){
+        if(*(point-1)==' '){
+            *(point-1) = '}';
+            *(point) = '\0'; 
+        }else{
+            *point = '}';
+            *(point+1) = '\0'; 
+        }
+    }else{
+        while(point < (temp_target_data+target_data_len-2)){
+            *point = *(point+sender_len+1);
+            point++;
+        }
+    }
+
+    point = &temp_sender_data[as->sender_prefix_len];
+    if((point + target_len+1) == (temp_sender_data+sender_data_len)){
+        if(*(point-1)==' '){
+            *(point-1) = '}';
+            *(point) = '\0'; 
+        }else{
+            *point = '}';
+            *(point+1) = '\0'; 
+        }
+    }else{
+        while(point < (temp_sender_data+sender_data_len-2)){
+            *point = *(point+target_len+1);
+            point++;
+        }
+    }
+    
+    while (fgets(temp_line, sizeof(temp_line), file)) {
+        if (counter == as->sender_line) {
+            fprintf(temp_file, "%s\n", temp_sender_data);
+        }else if(counter == as->target_line){
+            fprintf(temp_file, "%s\n", temp_target_data);
+        }else {
+            fputs(temp_line, temp_file);
+        }
+        counter++;
+    }
+
+    fclose(file);
+    fclose(temp_file);
+
+    // Replace the original file with the updated temp file
+    remove(ACCEPT_FILE);
+    rename("temp_accepts.txt", ACCEPT_FILE);
+    return 1;
+
 }
 
 int user_accept_rewrite_append(char *sender_name, char *target_name, struct accept_struct *as){
@@ -606,7 +1131,10 @@ int user_accept_rewrite_append(char *sender_name, char *target_name, struct acce
     FILE *file = fopen(ACCEPT_FILE, "r");
     if(!file) return 0;
     FILE *temp_file = fopen("temp_accepts.txt", "w");
-    if(!temp_file) return 0;
+    if(!temp_file) {
+        fclose(file);
+        return 0;
+    }
 
     int line_len = MAX_NAME_LEN*(MAX_REQUEST+2);
     char temp_line[line_len];
@@ -757,7 +1285,10 @@ int user_request_rewrite_remove(char *sender_name, char *target_name, char data[
     FILE *file = fopen(REQUEST_FILE, "r");
     if(!file) return 0;
     FILE *temp_file = fopen("temp_requests.txt", "w");
-    if(!temp_file) return 0;
+    if(!temp_file) {
+        fclose(file);
+        return 0;
+    }
 
     int line_len = MAX_NAME_LEN*(MAX_REQUEST+2);
     char temp_line[line_len];
@@ -809,7 +1340,10 @@ int user_request_rewrite_append(char *sender_name, char *target_name, char data[
     FILE *file = fopen(REQUEST_FILE, "r");
     if(!file) return 0;
     FILE *temp_file = fopen("temp_requests.txt", "w");
-    if(!temp_file) return 0;
+    if(!temp_file) {
+        fclose(file);
+        return 0;
+    }
 
     int line_len = MAX_NAME_LEN*(MAX_REQUEST+2);
     char temp_line[line_len];
@@ -925,46 +1459,6 @@ int user_request_append(char *target_name){
     return 1;
 }
 
-char *user_requests(int socket){
-    char target_name[MAX_NAME_LEN];
-    char *buffer = malloc(MAX_HEADER_SIZE);
-    strcpy(target_name, get_user_name(socket));
-
-    FILE *file = fopen(REQUEST_FILE, "r");
-    if(!file) return 0;
-    int line_len = MAX_NAME_LEN*(MAX_REQUEST+2);
-    char temp_line[line_len];
-    char temp_target_name [MAX_NAME_LEN];
-    int i;
-    int j;
-    int count = 0;
-    int line = 0;
-
-    while(fgets(temp_line, line_len, file)){
-        sscanf(temp_line, "%s {", temp_target_name);
-        line++;
-        if(compare_strings(temp_target_name, target_name)){
-            i = strlen(temp_target_name)+2;
-            j = 0;
-            while(temp_line[i] != '}'){
-                while(temp_line[i] != ' '){
-                    buffer[j] = temp_line[i];
-                    i++;
-                    j++;
-                }
-                buffer[j] = ' ';
-                count++;
-
-                if(temp_line[i] == ' '){ 
-                    i++;
-                }
-            }
-            break;
-        }
-    }
-    fclose(file);
-}
-
 int user_register(char buffer[], int prefix_len, struct register_struct *us) {
     char *name_p;
     char *password_p;
@@ -1048,30 +1542,7 @@ int user_register_append(char name[], char password[]){
     return 1;
 }
 
-char * user_online(){
-    char *name;
-    char *name_list= malloc(MAX_NAME_LEN*(user_count + 2)); 
-    char names[MAX_NAME_LEN*(user_count + 1)];
-    int count = 0;
-    int point = 0;
-    for (int i = 0; i < MAX_USERS; i++) {
-        if(client_sockets[i]){
-            name = get_user_name(client_sockets[i]);
-            if(name != NULL){
-                strcpy(names+point, name);
-                point += strlen(name);
-                names[point] = ',';
-                names[++point] = ' ';
-                ++point;
-            }
-            count++;
-        }
-    }
-    names[point-2] = '\0';
-    sprintf(name_list, "[%d] Online List: %s", count, names);
-    
-    return name_list;
-}
+
 
 int user_private_message(char buffer[], int prefix_len, int socket, struct private_message *pm){
     int buffer_len = strlen(buffer);
@@ -1148,7 +1619,7 @@ int user_authentication(char name[], char password[], int socket) {
 
 int user_exit_authentication(char buffer[], int prefix_len, int socket){
     if((strlen(buffer) - prefix_len) > 0) return 0;
-
+    user_online_list_remove(socket);
     return remove_user_by_socket(socket);
 }
 
@@ -1235,5 +1706,14 @@ void free_accept_struct(struct accept_struct *as){
         as->target_prefix_len = 0;
         as->sender_count = 0;
         as->target_count = 0;
+    }
+}
+
+void free_users_struct(struct users_struct *uss){
+    if(uss){
+        if(uss->names)
+            free(uss->names);
+        uss->names = NULL;
+        uss->count = 0;
     }
 }

@@ -1,7 +1,3 @@
-baki {lale true}
-lale {baki Serkan true}
-brkhn {ali true}
-ali {brkhn lale baki Serkan true}
-berkhan {}
-Serkan {lale ali true}
-true {ali brkhn baki lale Serkan}
+ali {}
+sena {yasin}
+yasin {sena}

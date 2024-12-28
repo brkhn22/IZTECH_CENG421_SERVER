@@ -11,8 +11,12 @@
 
 #define MAIN_PORT 8080
 
-#define MAX_MESSAGE_SIZE 2000
-#define MAX_HEADER_SIZE 2100
+#define MAX_MESSAGE_SIZE 4000
+#define MAX_HEADER_SIZE 4096
+
+char prefix_room[] = "/room ";
+
+int prefix_control(char prefix[], char buffer[]);
 
 int main() {
     int sock;
@@ -64,7 +68,7 @@ int main() {
                 if (nread > 0) {
                     buffer_body[nread] = '\0';  // Null-terminate the received message
                     printf("%s", buffer_body);
-                    printf("Please enter the port number \n");
+                    printf("Please select the room (ex: /room 1) \n");
                     fflush(stdout);
                     FD_CLR(sock, &read_write_set);
                     close(sock);
@@ -74,26 +78,52 @@ int main() {
             if (FD_ISSET(STDIN_FILENO, &testset)) {
                 // Read user input
                 if (fgets(buffer_body, MAX_MESSAGE_SIZE, stdin) != NULL) {
-                    port = atoi(buffer_body);
+                    buffer_body[strlen(buffer_body)-1] = '\0';
+                    if(prefix_control(prefix_room, buffer_body)){
+                        int prefix_len = strlen(prefix_room);
+                        char *p = &buffer_body[prefix_len];
+                        char room[2];
+                        int i = 0;
+                        int result = 1;
+                        if(strlen(p) < 3){
+                            for(;p < (strlen(buffer_body)+buffer_body); p++){
+                                if(i == 0){
+                                    if(*p > '0' && *p<='9'){
+                                        room[i] = *p;
+                                        i++;
+                                    }else result = 0;
+                                }else{
+                                    if(*p >= '0' && *p<='9'){
+                                        room[i] = *p;
+                                        i++;
+                                    }else result = 0;
+                                }
+                            }
+                            if(result){
+                                port = MAIN_PORT + atoi(room);
+                                // Create socket
+                                sock = socket(AF_INET, SOCK_STREAM, 0);
+                                if (sock < 0) {
+                                    perror("Socket creation failed");
+                                    return -1;
+                                }
 
-                    // Create socket
-                    sock = socket(AF_INET, SOCK_STREAM, 0);
-                    if (sock < 0) {
-                        perror("Socket creation failed");
-                        return -1;
+                                // Set up the server address structure
+                                serverAddr.sin_family = AF_INET;
+                                serverAddr.sin_port = htons(port);  // Server port
+                                serverAddr.sin_addr.s_addr = inet_addr("192.168.207.152");  // Server address (localhost)
+                                
+                                // Connect to the server
+                                if (connect(sock, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
+                                    perror("Connection to server failed");
+                                    close(sock);
+                                    return -1;
+                                }
+                                FD_SET(sock, &read_write_set);    
+                                memset(buffer_body, '\0', MAX_MESSAGE_SIZE);
+                            }
+                        }
                     }
-                    // Set up the server address structure
-                    serverAddr.sin_family = AF_INET;
-                    serverAddr.sin_port = htons(port);  // Server port
-                    serverAddr.sin_addr.s_addr = inet_addr("192.168.207.152");  // Server address (localhost)
-                    // Connect to the server
-                    if (connect(sock, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
-                        perror("Connection to server failed");
-                        close(sock);
-                        return -1;
-                    }
-                    FD_SET(sock, &read_write_set);    
-                    memset(buffer_body, '\0', MAX_MESSAGE_SIZE);
                 }
             }
         }else if (port > MAIN_PORT){
@@ -126,5 +156,13 @@ int main() {
     wait(NULL);
     close(sock);
     printf("Disconnected from server.\n");
+    return 0;
+}
+
+int prefix_control(char prefix[], char buffer[]){
+
+    int prefix_len = strlen(prefix);
+    if(strncmp(buffer, prefix, prefix_len) == 0) return 1;
+
     return 0;
 }

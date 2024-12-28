@@ -6,12 +6,13 @@
 #define MAX_USERS 32
 #define MAX_NAME_LEN 50
 #define MIN_NAME_LEN 3
-#define MAX_REQUEST 50
+#define MAX_REQUEST 64
 #define ANONYMOUS "anonymous"
 #define SERVER "server"
 #define REGISTER_FILE "registered_users.txt"
 #define REQUEST_FILE "requests_list.txt"
 #define ACCEPT_FILE "accepts_list.txt"
+#define ONLINE_FILE "online_list.txt"
 
 
 struct user_struct {

@@ -1,7 +1,3 @@
-baki 123
-lale 123
-brkhn 123
-ali 123
-berkhan 1234
-Serkan 1234
-true 1234
+ali 1234
+sena 1234
+yasin 1234
